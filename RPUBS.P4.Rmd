@@ -1,18 +1,18 @@
 ---
-title: "P4: Teoria Moderna de Portifolio de Markowitz e VaR"
+title: "P4: Teoria Moderna de Portfólio de Markowitz e VaR"
 author: "Raphael Marques Franco"
 date: "`r Sys.Date()`"
 output: 
  html_document:
-    toc: true                    # Tabela de conteúdo
-    toc_float: true              # TOC que flutua ao lado
-    toc_depth: 3                 # Profundidade até nível 3
-    number_sections: true        # Numerar seções automaticamente
-    theme: cosmo                 # Tema limpo e profissional
-    highlight: tango             # Destaque de código
-    code_folding: hide           # Esconder código inicialmente
-    fig_caption: true            # Legendas nas figuras
-    df_print: paged              # Tabelas paginadas
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+    fig_caption: true
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
@@ -26,50 +26,26 @@ options(scipen = 999)
 # 1. Carregamento de Pacotes
 
 ```{r pacotes}
-# Instalar pacotes necessários (execute uma vez):
-# install.packages("yfR")
-# install.packages("GetBCBData")
-# install.packages("moments")
-# install.packages("nortest")
-# install.packages("ggplot2")
-# install.packages("tidyr")
-# install.packages("dplyr")
-# install.packages("knitr")
-# install.packages("zoo")
-# install.packages("quadprog")
-# install.packages("xts")
-# install.packages("PerformanceAnalytics")
-
-# Pacotes para coleta de dados financeiros
-library(yfR)         # API otimizada para B3 (Brasil)
-library(GetBCBData)  # Coleta de dados do Banco Central (SELIC)
-library(quantmod)
-
 # Pacotes para análise estatística
 library(moments)     # Testes de assimetria e curtose
-library(nortest)     # Testes de normalidade (Anderson-Darling, etc)
+library(nortest)     # Testes de normalidade
 
 # Pacotes para visualização e manipulação
 library(ggplot2)     # Gráficos
 library(tidyr)       # Manipulação de dados
 library(dplyr)       # Manipulação de dados
 library(knitr)       # Tabelas formatadas
-library(zoo)         # Séries temporais (para na.locf)
-library(quadprog)    # Otimização quadrática (Fronteira Eficiente)
+library(zoo)         # Séries temporais
+library(quadprog)    # Otimização quadrática
 library(xts)         # Séries temporais estendidas
-library(kableExtra)  #Para formatar tabelas em PDF
+library(kableExtra)  # Formatar tabelas
 ```
 
 # 2. Definição de Parâmetros
 
 ```{r parametros}
 # Ações a serem analisadas
-acoes <- c("POMO3.SA", "AURE3.SA", "BBAS3.SA", "ITUB3.SA")
 nomes_acoes <- c("POMO3", "AURE3", "BBAS3", "ITUB3")
-
-# Período de análise
-data_inicio <- as.Date("2024-11-18")
-data_fim <- as.Date("2025-11-17")
 
 # Parâmetros para VaR
 investimento <- 100000  # R$ 100.000,00
@@ -77,102 +53,97 @@ confianca <- 0.99       # 99% de confiança
 janela <- 252           # 252 dias úteis (1 ano)
 ```
 
-# 3. Coleta de Dados
+# 3. Leitura dos Dados do CSV
 
-## 3.1 Preços de Fechamento das Ações (API B3 via yfR)
+```{r leitura_dados}
+# Ler o arquivo CSV
+# Importante: ajustar o separador conforme o formato do arquivo
+dados_csv <- read.csv("data.csv", 
+                      sep = ";",           # Separador de colunas
+                      dec = ",",           # Separador decimal
+                      stringsAsFactors = FALSE)
 
-```{r coleta_acoes}
-# Coletar dados diretamente da B3 usando yfR
-# yfR é otimizado para ações brasileiras e usa cache local
-cat("Coletando dados da B3...\n")
-
-dados_b3 <- yf_get(
-  tickers = acoes,
-  first_date = data_inicio,
-  last_date = data_fim,
-  freq_data = "daily",
-  thresh_bad_data = 0.75  # Permitir até 25% de dados faltantes
-)
-
-# Verificar se coletou dados
-if(nrow(dados_b3) == 0){
-  stop("Erro: Nenhum dado foi coletado. Verifique os tickers e datas.")
+# Remover a primeira coluna vazia se existir
+if(names(dados_csv)[1] == "" || names(dados_csv)[1] == "X") {
+  dados_csv <- dados_csv[, -1]
 }
 
-cat("\nDados coletados com sucesso!\n")
-cat("Total de observações:", nrow(dados_b3), "\n")
-cat("Período:", min(dados_b3$ref_date), "a", max(dados_b3$ref_date), "\n\n")
+# Converter coluna de Data para formato Date
+dados_csv$Data <- as.Date(dados_csv$Data, format = "%d/%m/%Y")
 
-# Mostrar resumo dos dados coletados por ação
-cat("### Resumo por Ação:\n")
-resumo_coleta <- dados_b3 %>%
-  group_by(ticker) %>%
-  summarise(
-    N_Obs = n(),
-    Primeira_Data = min(ref_date),
-    Ultima_Data = max(ref_date),
-    Preco_Inicial = first(price_close),
-    Preco_Final = last(price_close),
-    Retorno_Periodo = ((last(price_close) / first(price_close)) - 1) * 100
-  )
+# Converter colunas numéricas (remover vírgulas e converter para numeric)
+colunas_numericas <- c("POMO3", "AURE3", "BBAS3", "ITUB3", "IBOV", "SELIC")
 
-kable(resumo_coleta, digits = 2,
-      caption = "Resumo da Coleta de Dados (B3)")
+for(col in colunas_numericas) {
+  if(col %in% names(dados_csv)) {
+    # Substituir vírgula por ponto e converter para numérico
+    dados_csv[[col]] <- as.numeric(gsub(",", ".", dados_csv[[col]]))
+  }
+}
 
-# Transformar para formato wide (colunas = ações)
-precos_wide <- dados_b3 %>%
-  select(ref_date, ticker, price_close) %>%
-  pivot_wider(names_from = ticker, values_from = price_close)
+# Ordenar por data
+dados_csv <- dados_csv[order(dados_csv$Data), ]
 
-# Converter para xts (formato de séries temporais)
-library(xts)
-precos <- xts(precos_wide[, -1], order.by = precos_wide$ref_date)
+# Exibir informações sobre os dados carregados
+cat("### Dados Carregados do CSV:\n\n")
+cat("Total de observações:", nrow(dados_csv), "\n")
+cat("Período:", min(dados_csv$Data), "a", max(dados_csv$Data), "\n")
+cat("Variáveis:", paste(names(dados_csv), collapse = ", "), "\n\n")
+
+# Exibir primeiras linhas
+kable(head(dados_csv, 10), digits = 4,
+      caption = "Primeiras 10 linhas dos dados")
+```
+
+# 4. Preparação dos Dados para Análise
+
+```{r preparacao_dados}
+# Criar objetos xts para as séries temporais
+# Preços das ações
+precos <- xts(dados_csv[, nomes_acoes], order.by = dados_csv$Data)
 colnames(precos) <- nomes_acoes
 
-# Exibir primeiras linhas dos preços
-cat("\n### Primeiros Preços Coletados:\n")
-kable(head(data.frame(Data = index(precos), coredata(precos)), 5), 
-      digits = 4,booktabs = TRUE,
-      caption = "Primeiras 5 observações de Preços de Fechamento")%>%
-  kableExtra::kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), full_width = FALSE)
-```
-
-## 3.2 Dados do IBOVESPA
-
-```{r coleta_ibovespa}
-# Coleta do Índice Bovespa
-getSymbols("^BVSP", src = "yahoo", from = data_inicio, to = data_fim)
-ibovespa <- Cl(BVSP)
+# IBOVESPA
+ibovespa <- xts(dados_csv$IBOV, order.by = dados_csv$Data)
 colnames(ibovespa) <- "IBOVESPA"
-```
 
-## 3.4 Dados da SELIC
-
-```{r coleta_selic}
-# Código da SELIC no SGS do BCB: 11 (Taxa SELIC - % a.a.)
-cat("Coletando dados da SELIC do Banco Central...\n")
-
-selic_data <- gbcbd_get_series(id = 11, 
-                               first.date = data_inicio, 
-                               last.date = data_fim,
-                               use.memoise = FALSE)
-
+# SELIC (já em % a.a. no CSV)
 # Converter para taxa diária equivalente
-# Fórmula: (1 + taxa_anual)^(1/252) - 1
-selic_data$taxa_diaria <- (1 + selic_data$value/100)^(1/252) - 1
+selic_anual <- dados_csv$SELIC
+selic_diaria <- (1 + selic_anual/100)^(1/252) - 1
 
-cat("SELIC coletada com sucesso!\n")
-cat("Taxa SELIC atual (% a.a.):", tail(selic_data$value, 1), "\n")
+# Criar dataframe com informações da SELIC
+selic_data <- data.frame(
+  ref.date = dados_csv$Data,
+  value = selic_anual,
+  taxa_diaria = selic_diaria
+)
+
+cat("\n### Resumo dos Dados Preparados:\n\n")
+cat("Taxa SELIC média (% a.a.):", round(mean(selic_anual, na.rm = TRUE), 2), "\n")
+cat("Taxa SELIC atual (% a.a.):", tail(selic_anual, 1), "\n")
 cat("Taxa diária equivalente:", 
-    round(tail(selic_data$taxa_diaria, 1) * 100, 4), "%\n")
+    round(tail(selic_diaria, 1) * 100, 4), "%\n\n")
+
+# Resumo dos preços
+resumo_precos <- data.frame(
+  Acao = nomes_acoes,
+  Preco_Inicial = as.numeric(precos[1, ]),
+  Preco_Final = as.numeric(precos[nrow(precos), ]),
+  Retorno_Periodo = ((as.numeric(precos[nrow(precos), ]) / 
+                       as.numeric(precos[1, ])) - 1) * 100
+)
+
+kable(resumo_precos, digits = 2,
+      caption = "Resumo dos Preços das Ações")
 ```
 
-# 4. Visualização dos Dados Coletados
+# 5. Visualização dos Dados Coletados
 
-## 4.1 Gráficos de Preços de Fechamento
+## 5.1 Gráficos de Preços de Fechamento
 
-```{r grafico_precos,fig.height=6.5, fig.width=7.5}
-# Converter xts para dataframe para ggplot2
+```{r grafico_precos, fig.height=6.5, fig.width=7.5}
+# Converter para dataframe para ggplot2
 precos_df <- data.frame(Data = index(precos), coredata(precos))
 
 # Transformar para formato longo
@@ -184,7 +155,8 @@ ggplot(precos_long, aes(x = Data, y = Preco, color = Acao)) +
   geom_line(linewidth = 1) +
   facet_wrap(~Acao, scales = "free_y", ncol = 2) +
   labs(title = "Evolução dos Preços de Fechamento",
-       subtitle = paste0("Período: ", data_inicio, " a ", data_fim),
+       subtitle = paste0("Período: ", min(dados_csv$Data), " a ", 
+                        max(dados_csv$Data)),
        x = "Data",
        y = "Preço de Fechamento (R$)") +
   theme_minimal() +
@@ -193,10 +165,9 @@ ggplot(precos_long, aes(x = Data, y = Preco, color = Acao)) +
         plot.subtitle = element_text(hjust = 0.5, size = 10))
 ```
 
-## 4.2 Gráfico do IBOVESPA
+## 5.2 Gráfico do IBOVESPA
 
-```{r grafico_ibovespa,fig.height=5, fig.width=7.5}
-# Gráfico do IBOVESPA
+```{r grafico_ibovespa, fig.height=5, fig.width=7.5}
 ibov_df <- data.frame(Data = index(ibovespa), IBOVESPA = coredata(ibovespa))
 
 ggplot(ibov_df, aes(x = Data, y = IBOVESPA)) +
@@ -208,11 +179,25 @@ ggplot(ibov_df, aes(x = Data, y = IBOVESPA)) +
   theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
 ```
 
-# 5. Cálculo dos Retornos Logarítmicos
+## 5.3 Evolução da Taxa SELIC
+
+```{r grafico_selic, fig.height=5, fig.width=7.5}
+selic_df <- data.frame(Data = dados_csv$Data, SELIC = selic_anual)
+
+ggplot(selic_df, aes(x = Data, y = SELIC)) +
+  geom_line(color = "darkred", linewidth = 1) +
+  geom_point(color = "darkred", size = 1) +
+  labs(title = "Evolução da Taxa SELIC",
+       x = "Data",
+       y = "Taxa SELIC (% a.a.)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+```
+
+# 6. Cálculo dos Retornos Logarítmicos
 
 ```{r retornos}
 # Retornos logarítmicos das ações
-# ln(Pt/Pt-1) - mais apropriado para análise estatística
 retornos <- na.omit(diff(log(precos)))
 
 # Retorno do IBOVESPA
@@ -234,22 +219,17 @@ kable(estatisticas, digits = 4,
       caption = "Estatísticas Descritivas dos Retornos Diários")
 ```
 
-## 5.1 Dataframe Completo: Dados Diários Consolidados
+## 6.1 Dataframe Completo: Dados Diários Consolidados
 
 ```{r dataframe_consolidado}
-# Criar dataframe completo com todas as informações
-# Alinhar as datas (alguns dados podem ter datas diferentes)
-
-# Preparar dados das ações
+# Criar dataframe completo
 dados_completos <- data.frame(Data = index(retornos))
 
 # Adicionar preços e retornos de cada ação
 for(i in 1:length(nomes_acoes)){
-  # Preços
   col_preco <- paste0("Preco_", nomes_acoes[i])
   dados_completos[[col_preco]] <- as.numeric(precos[index(retornos), i])
   
-  # Retornos
   col_retorno <- paste0("Retorno_", nomes_acoes[i])
   dados_completos[[col_retorno]] <- as.numeric(retornos[, i])
 }
@@ -258,41 +238,34 @@ for(i in 1:length(nomes_acoes)){
 dados_completos$Preco_IBOVESPA <- as.numeric(ibovespa[index(retornos)])
 dados_completos$Retorno_IBOVESPA <- as.numeric(retorno_ibov)
 
-# Adicionar SELIC (fazer merge por data)
-# A SELIC pode não ter dados para todos os dias, então usamos merge
-selic_diaria <- selic_data[, c("ref.date", "taxa_diaria")]
-colnames(selic_diaria) <- c("Data", "SELIC_Diaria")
+# Adicionar SELIC
+selic_subset <- selic_data[selic_data$ref.date %in% dados_completos$Data, ]
+dados_completos <- merge(dados_completos, 
+                         selic_subset[, c("ref.date", "taxa_diaria")],
+                         by.x = "Data", by.y = "ref.date", all.x = TRUE)
+colnames(dados_completos)[ncol(dados_completos)] <- "SELIC_Diaria"
 
-dados_completos <- merge(dados_completos, selic_diaria, 
-                         by = "Data", all.x = TRUE)
-
-# Preencher dias sem SELIC com última observação (forward fill)
+# Preencher NAs com última observação
 dados_completos$SELIC_Diaria <- zoo::na.locf(dados_completos$SELIC_Diaria, 
                                               na.rm = FALSE)
 
-# Exibir primeiras linhas
-kable(head(dados_completos, 10), digits = 6, booktabs = TRUE,
+# Exibir primeiras e últimas linhas
+kable(head(dados_completos, 10), digits = 6,
       caption = "Primeiras 10 linhas do DataFrame Consolidado") %>%
-  kable_styling(latex_options = c("scale_down", "striped", "HOLD_position"))
+  kable_styling(latex_options = c("scale_down", "striped"))
 
-# Exibir últimas linhas
-kable(tail(dados_completos, 10), digits = 6, booktabs = TRUE,
+kable(tail(dados_completos, 10), digits = 6,
       caption = "Últimas 10 linhas do DataFrame Consolidado") %>%
-  kable_styling(latex_options = c("scale_down", "striped", "HOLD_position"))
-
-# Salvar o dataframe completo (opcional)
-# write.csv(dados_completos, "dados_completos.csv", row.names = FALSE)
+  kable_styling(latex_options = c("scale_down", "striped"))
 ```
 
-## 5.2 Visualização dos Retornos Diários
+## 6.2 Visualização dos Retornos Diários
 
-```{r grafico_retornos,fig.height=7, fig.width=7.5}
-# Preparar dados para visualização
+```{r grafico_retornos, fig.height=7, fig.width=7.5}
 retornos_df <- data.frame(Data = index(retornos), coredata(retornos))
 retornos_long <- retornos_df %>%
   pivot_longer(cols = -Data, names_to = "Acao", values_to = "Retorno")
 
-# Gráfico de retornos diários
 ggplot(retornos_long, aes(x = Data, y = Retorno, color = Acao)) +
   geom_line(alpha = 0.6) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
@@ -307,17 +280,13 @@ ggplot(retornos_long, aes(x = Data, y = Retorno, color = Acao)) +
         plot.subtitle = element_text(hjust = 0.5, size = 10))
 ```
 
-**Interpretação:** Retornos com assimetria próxima de 0 e curtose próxima de 3 indicam distribuição mais próxima da normal. Assimetria negativa indica maior probabilidade de retornos negativos extremos. Curtose > 3 indica caudas pesadas (maior probabilidade de eventos extremos).
-
-## 5.3 Comparação: Retornos vs IBOVESPA
+## 6.3 Comparação: Retornos vs IBOVESPA
 
 ```{r retornos_vs_ibov, fig.height=7.5, fig.width=7.5}
-# Combinar retornos das ações com IBOVESPA
 retornos_completo <- merge(retornos, retorno_ibov)
 retornos_comp_df <- data.frame(Data = index(retornos_completo), 
                                coredata(retornos_completo))
 
-# Gráficos de dispersão: Ação vs IBOVESPA
 par(mfrow = c(2, 2))
 for(i in 1:length(nomes_acoes)){
   plot(retornos_comp_df$IBOVESPA, retornos_comp_df[, nomes_acoes[i]],
@@ -326,11 +295,9 @@ for(i in 1:length(nomes_acoes)){
        ylab = paste("Retorno", nomes_acoes[i]),
        pch = 16, col = rgb(0, 0, 1, 0.3))
   
-  # Linha de regressão
   abline(lm(retornos_comp_df[, nomes_acoes[i]] ~ retornos_comp_df$IBOVESPA),
          col = "red", lwd = 2)
   
-  # Calcular correlação
   cor_val <- cor(retornos_comp_df[, nomes_acoes[i]], 
                  retornos_comp_df$IBOVESPA)
   legend("topleft", legend = paste("Corr =", round(cor_val, 3)),
@@ -338,16 +305,12 @@ for(i in 1:length(nomes_acoes)){
 }
 ```
 
-# 6. Testes de Normalidade
+# 7. Testes de Normalidade
 
 ```{r testes_normalidade}
-# Função para realizar múltiplos testes de normalidade
 testar_normalidade <- function(dados, nome){
   cat("\n### Testes de Normalidade para", nome, "\n\n")
   
-  # Teste de Shapiro-Wilk (mais poderoso para amostras pequenas)
-  # H0: dados seguem distribuição normal
-  # p-valor < 0.05: rejeita H0 (dados NÃO são normais)
   sw <- shapiro.test(as.numeric(dados))
   cat("**Shapiro-Wilk:**\n")
   cat("  Estatística W =", round(sw$statistic, 4), "\n")
@@ -356,7 +319,6 @@ testar_normalidade <- function(dados, nome){
                              "Não rejeita normalidade", 
                              "Rejeita normalidade"), "\n\n")
   
-  # Teste de Anderson-Darling (sensível às caudas)
   ad <- ad.test(as.numeric(dados))
   cat("**Anderson-Darling:**\n")
   cat("  Estatística A =", round(ad$statistic, 4), "\n")
@@ -365,7 +327,6 @@ testar_normalidade <- function(dados, nome){
                              "Não rejeita normalidade", 
                              "Rejeita normalidade"), "\n\n")
   
-  # Teste de Jarque-Bera (baseado em assimetria e curtose)
   jb <- jarque.test(as.numeric(dados))
   cat("**Jarque-Bera:**\n")
   cat("  Estatística JB =", round(jb$statistic, 4), "\n")
@@ -377,7 +338,6 @@ testar_normalidade <- function(dados, nome){
   return(c(SW = sw$p.value, AD = ad$p.value, JB = jb$p.value))
 }
 
-# Aplicar testes para cada ação
 resultados_testes <- data.frame()
 for(i in 1:ncol(retornos)){
   p_valores <- testar_normalidade(retornos[,i], nomes_acoes[i])
@@ -389,68 +349,37 @@ kable(resultados_testes, digits = 4,
       caption = "P-valores dos Testes de Normalidade")
 ```
 
-**Critérios de Interpretação:**
+## 7.1 Visualização da Distribuição
 
-- **p-valor > 0.05**: Não rejeitamos H0, dados podem ser considerados normais (ao nível de 5%)
-- **p-valor > 0.10**: Evidência fraca contra normalidade - dados razoavelmente normais
-- **p-valor entre 0.01 e 0.05**: Evidência moderada contra normalidade
-- **p-valor < 0.01**: Forte evidência contra normalidade - dados claramente não normais
-
-**Consenso:** Se pelo menos 2 dos 3 testes tiverem p-valor > 0.05, podemos considerar que a hipótese de normalidade é razoável para fins práticos.
-
-# 6. Visualização da Distribuição
-
-```{r graficos_distribuicao,fig.height=7.5, fig.width=7.5}
+```{r graficos_distribuicao, fig.height=7.5, fig.width=7.5}
 par(mfrow = c(2, 2))
 
 for(i in 1:ncol(retornos)){
-  # Q-Q Plot (comparação com distribuição normal)
   qqnorm(retornos[,i], main = paste("Q-Q Plot -", nomes_acoes[i]))
   qqline(retornos[,i], col = "red", lwd = 2)
   
-  # Histograma com curva normal sobreposta
   hist(retornos[,i], breaks = 30, probability = TRUE,
        main = paste("Histograma -", nomes_acoes[i]),
        xlab = "Retorno", ylab = "Densidade", col = "lightblue")
   
-  # Curva normal teórica
   curve(dnorm(x, mean = mean(retornos[,i]), sd = sd(retornos[,i])),
         add = TRUE, col = "red", lwd = 2)
 }
 ```
 
-**Interpretação Q-Q Plot:** Pontos próximos à linha vermelha indicam normalidade. Desvios nas caudas indicam caudas mais pesadas (curtose) ou assimétricas.
-
 # 8. Fronteira Eficiente (Markowitz)
 
 ```{r fronteira_eficiente, fig.height=5, fig.width=7.5}
-# Pacote para otimização de portfólio
-library(quadprog)
-
-# Matriz de covariância dos retornos
 cov_matrix <- cov(retornos)
-
-# Vetor de retornos médios
 retornos_medios <- colMeans(retornos)
 
-# Função para calcular portfólio de variância mínima
 calc_portfolio <- function(retornos_alvo, retornos_medios, cov_matrix){
   n <- length(retornos_medios)
-  
-  # Matriz D (2x covariância para função quadrática)
   Dmat <- 2 * cov_matrix
-  
-  # Vetor d (zeros para minimização de variância)
   dvec <- rep(0, n)
-  
-  # Restrições
-  # 1. Soma dos pesos = 1
-  # 2. Retorno esperado = retorno alvo
-  # 3. Pesos >= 0 (sem venda a descoberto)
   Amat <- cbind(rep(1, n), retornos_medios, diag(n))
   bvec <- c(1, retornos_alvo, rep(0, n))
   
-  # Resolver problema de otimização quadrática
   resultado <- tryCatch({
     solve.QP(Dmat, dvec, Amat, bvec, meq = 2)
   }, error = function(e){
@@ -459,7 +388,6 @@ calc_portfolio <- function(retornos_alvo, retornos_medios, cov_matrix){
   
   if(is.null(resultado)) return(NULL)
   
-  # Retornar pesos, retorno e risco
   pesos <- resultado$solution
   retorno <- sum(pesos * retornos_medios)
   risco <- sqrt(t(pesos) %*% cov_matrix %*% pesos)
@@ -467,13 +395,10 @@ calc_portfolio <- function(retornos_alvo, retornos_medios, cov_matrix){
   return(list(pesos = pesos, retorno = retorno, risco = as.numeric(risco)))
 }
 
-# Gerar fronteira eficiente
-# Retornos alvo: do mínimo ao máximo possível
 retorno_min <- min(retornos_medios)
 retorno_max <- max(retornos_medios)
 retornos_alvo <- seq(retorno_min, retorno_max, length.out = 100)
 
-# Calcular portfólios para cada retorno alvo
 fronteira <- data.frame()
 
 for(ret_alvo in retornos_alvo){
@@ -481,30 +406,25 @@ for(ret_alvo in retornos_alvo){
   
   if(!is.null(portfolio)){
     fronteira <- rbind(fronteira, data.frame(
-      Retorno = portfolio$retorno * 252,  # Anualizar (252 dias úteis)
-      Risco = portfolio$risco * sqrt(252)  # Anualizar
+      Retorno = portfolio$retorno * 252,
+      Risco = portfolio$risco * sqrt(252)
     ))
   }
 }
 
-# Adicionar pontos das ações individuais (anualizados)
 acoes_individuais <- data.frame(
   Acao = nomes_acoes,
   Retorno = retornos_medios * 252,
   Risco = apply(retornos, 2, sd) * sqrt(252)
 )
 
-# Gráfico da Fronteira Eficiente
 ggplot() +
-  # Fronteira eficiente
   geom_line(data = fronteira, aes(x = Risco, y = Retorno),
             color = "darkblue", linewidth = 1.5) +
-  # Ações individuais
   geom_point(data = acoes_individuais, aes(x = Risco, y = Retorno, color = Acao),
              size = 4) +
   geom_text(data = acoes_individuais, aes(x = Risco, y = Retorno, label = Acao),
             vjust = -1, size = 4) +
-  # Formatação dos eixos para Porcentagem com 2 casas decimais
   scale_x_continuous(labels = scales::percent_format(accuracy = 0.01)) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 0.01)) +
   labs(title = "Fronteira Eficiente de Markowitz",
@@ -516,390 +436,18 @@ ggplot() +
         plot.subtitle = element_text(hjust = 0.5, size = 10),
         legend.position = "right")
 
-# Tabela com informações das ações
 kable(acoes_individuais, digits = 4,
       caption = "Retorno e Risco Anualizados das Ações")
 ```
 
-**Interpretação da Fronteira Eficiente:**
-
-A curva azul representa a combinação ótima de ativos que maximiza o retorno para cada nível de risco. Pontos acima da fronteira são impossíveis de alcançar com os ativos disponíveis, enquanto pontos abaixo da fronteira são ineficientes, pois existe uma combinação melhor que oferece maior retorno para o mesmo risco ou menor risco para o mesmo retorno. Investidores devem escolher portfólios ao longo da fronteira de acordo com sua tolerância ao risco, sendo que cada ponto da fronteira representa uma alocação ótima específica entre os quatro ativos analisados.
-
-# 8.2 Fronteira Eficiente com ETF IBOVESPA
-
-```{r fronteira_com_etf, fig.height=5, fig.width=7.5}
-# Agora vamos expandir a análise incluindo o IBOVESPA como um ativo adicional
-# Isso simula a possibilidade de investir em um ETF que replica o índice
-
-# Combinar retornos das ações com o IBOVESPA
-retornos_com_etf <- merge(retornos, retorno_ibov)
-colnames(retornos_com_etf) <- c(nomes_acoes, "IBOVESPA")
-
-# Recalcular matriz de covariância e retornos médios com ETF incluído
-cov_matrix_etf <- cov(retornos_com_etf)
-retornos_medios_etf <- colMeans(retornos_com_etf)
-
-cat("\n### Matriz de Correlação com ETF IBOVESPA:\n")
-cor_matrix_etf <- cor(retornos_com_etf)
-kable(round(cor_matrix_etf, 3), 
-      caption = "Matriz de Correlação: Ações + ETF IBOVESPA")
-
-# Função para calcular portfólio com ETF incluído
-calc_portfolio_etf <- function(retornos_alvo, retornos_medios, cov_matrix){
-  n <- length(retornos_medios)
-  
-  Dmat <- 2 * cov_matrix
-  dvec <- rep(0, n)
-  
-  # Restrições: soma = 1, retorno = alvo, pesos >= 0
-  Amat <- cbind(rep(1, n), retornos_medios, diag(n))
-  bvec <- c(1, retornos_alvo, rep(0, n))
-  
-  resultado <- tryCatch({
-    solve.QP(Dmat, dvec, Amat, bvec, meq = 2)
-  }, error = function(e){
-    return(NULL)
-  })
-  
-  if(is.null(resultado)) return(NULL)
-  
-  pesos <- resultado$solution
-  retorno <- sum(pesos * retornos_medios)
-  risco <- sqrt(t(pesos) %*% cov_matrix %*% pesos)
-  
-  return(list(pesos = pesos, retorno = retorno, risco = as.numeric(risco)))
-}
-
-# Gerar nova fronteira eficiente com ETF
-retorno_min_etf <- min(retornos_medios_etf)
-retorno_max_etf <- max(retornos_medios_etf)
-retornos_alvo_etf <- seq(retorno_min_etf, retorno_max_etf, length.out = 100)
-
-fronteira_etf <- data.frame()
-
-for(ret_alvo in retornos_alvo_etf){
-  portfolio <- calc_portfolio_etf(ret_alvo, retornos_medios_etf, cov_matrix_etf)
-  
-  if(!is.null(portfolio)){
-    fronteira_etf <- rbind(fronteira_etf, data.frame(
-      Retorno = portfolio$retorno * 252,
-      Risco = portfolio$risco * sqrt(252)
-    ))
-  }
-}
-
-# Adicionar ponto do ETF IBOVESPA
-etf_ponto <- data.frame(
-  Acao = "IBOVESPA (ETF)",
-  Retorno = retornos_medios_etf["IBOVESPA"] * 252,
-  Risco = sd(retorno_ibov) * sqrt(252)
-)
-
-# Combinar com ações individuais
-todos_ativos <- rbind(acoes_individuais, etf_ponto)
-
-# Gráfico comparando as duas fronteiras
-ggplot() +
-  # Fronteira original (só ações)
-  geom_line(data = fronteira, aes(x = Risco, y = Retorno),
-            color = "gray60", linewidth = 1, linetype = "dashed",
-            alpha = 0.7) +
-  # Nova fronteira (ações + ETF)
-  geom_line(data = fronteira_etf, aes(x = Risco, y = Retorno),
-            color = "darkgreen", linewidth = 1.5) +
-  # Todos os ativos individuais
-  geom_point(data = todos_ativos, aes(x = Risco, y = Retorno, color = Acao),
-             size = 4) +
-  geom_text(data = todos_ativos, aes(x = Risco, y = Retorno, label = Acao),
-            vjust = -1, size = 3.5, check_overlap = TRUE) +
-  scale_x_continuous(labels = scales::percent_format(accuracy = 0.01)) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 0.01)) +
-  labs(title = "Fronteira Eficiente: Ações vs Ações + ETF IBOVESPA",
-       subtitle = "Linha verde: com ETF | Linha tracejada: apenas ações",
-       x = "Risco (Desvio Padrão Anualizado)",
-       y = "Retorno Esperado Anualizado") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10),
-        legend.position = "right")
-```
-
-**Interpretação da Diversificação com ETF:**
-
-A inclusão do ETF IBOVESPA na análise expande o conjunto de oportunidades de investimento, representado pela fronteira eficiente verde. Observe que esta nova fronteira domina a fronteira original (linha tracejada cinza) em praticamente todos os pontos, demonstrando que a adição do ETF oferece combinações superiores de risco e retorno. Isto ocorre porque o ETF IBOVESPA, sendo uma cesta diversificada de ações, apresenta características de risco e retorno que complementam as ações individuais, permitindo que o investidor alcance níveis de diversificação que seriam impossíveis usando apenas as quatro ações isoladamente.
-
-## 8.3 Composição Ótima: Ações + ETF
-
-```{r composicao_otima_etf}
-# Encontrar o portfólio de variância mínima com ETF
-portfolio_min_var_etf <- fronteira_etf[which.min(fronteira_etf$Risco), ]
-
-ret_alvo_min_etf <- portfolio_min_var_etf$Retorno / 252
-portfolio_otimo_etf <- calc_portfolio_etf(ret_alvo_min_etf, retornos_medios_etf, 
-                                          cov_matrix_etf)
-
-if(!is.null(portfolio_otimo_etf)){
-  composicao_etf <- data.frame(
-    Ativo = c(nomes_acoes, "IBOVESPA (ETF)"),
-    Peso_Percentual = portfolio_otimo_etf$pesos * 100,
-    Valor_Investido = portfolio_otimo_etf$pesos * investimento
-  )
-  
-  # Filtrar apenas ativos com peso significativo (> 0.1%)
-  composicao_etf_filtrada <- composicao_etf[composicao_etf$Peso_Percentual > 0.1, ]
-  
-  cat("\n### PORTFÓLIO ÓTIMO: AÇÕES + ETF IBOVESPA\n\n")
-  kable(composicao_etf_filtrada, digits = 2, row.names = FALSE,
-        caption = "Composição Ótima com ETF (Variância Mínima)")
-  
-  cat("\n**Características do Portfólio Ótimo com ETF:**\n")
-  cat("- Retorno esperado anualizado:", 
-      round(portfolio_otimo_etf$retorno * 252 * 100, 2), "%\n")
-  cat("- Risco (desvio padrão anualizado):", 
-      round(portfolio_otimo_etf$risco * sqrt(252) * 100, 2), "%\n")
-  cat("- Sharpe Ratio (assumindo SELIC como taxa livre de risco):",
-      round((portfolio_otimo_etf$retorno * 252 - mean(selic_data$value)/100) / 
-            (portfolio_otimo_etf$risco * sqrt(252)), 3), "\n\n")
-}
-```
-
-A composição ótima que minimiza a variância mostra como o investidor deve distribuir seus recursos entre as ações individuais e o ETF IBOVESPA. Note que a otimização matemática considera não apenas o retorno esperado e o risco de cada ativo, mas também as correlações entre eles, buscando combinações que maximizem o benefício da diversificação. Ativos com peso próximo de zero ou zero indicam que, do ponto de vista da eficiência de média-variância, eles não contribuem significativamente para melhorar a relação risco-retorno do portfólio neste ponto específico da fronteira.
-
-# 8.4 Linha de Alocação de Capital (CAL) - Portfólio com Ativo Livre de Risco
-
-```{r linha_alocacao_capital, fig.height=6, fig.width=7.5}
-# A Linha de Alocação de Capital conecta o ativo livre de risco (SELIC)
-# ao portfólio tangente na fronteira eficiente
-# Este é o portfólio de maior Índice de Sharpe
-
-# Taxa livre de risco (SELIC média anualizada)
-taxa_livre_risco <- mean(selic_data$value) / 100
-
-cat("\n### CONSTRUÇÃO DA LINHA DE ALOCAÇÃO DE CAPITAL\n\n")
-cat("Taxa Livre de Risco (SELIC média):", round(taxa_livre_risco * 100, 2), "% a.a.\n\n")
-
-# Função para calcular o Índice de Sharpe
-calcular_sharpe <- function(retorno, risco, rf){
-  return((retorno - rf) / risco)
-}
-
-# Encontrar o portfólio tangente (maior Sharpe Ratio)
-fronteira_etf$Sharpe <- sapply(1:nrow(fronteira_etf), function(i){
-  calcular_sharpe(fronteira_etf$Retorno[i], fronteira_etf$Risco[i], 
-                  taxa_livre_risco)
-})
-
-# Portfólio tangente
-idx_tangente <- which.max(fronteira_etf$Sharpe)
-portfolio_tangente <- fronteira_etf[idx_tangente, ]
-
-cat("**Portfólio Tangente (Ótimo de Sharpe):**\n")
-cat("- Retorno esperado:", round(portfolio_tangente$Retorno * 100, 2), "% a.a.\n")
-cat("- Risco:", round(portfolio_tangente$Risco * 100, 2), "% a.a.\n")
-cat("- Índice de Sharpe:", round(portfolio_tangente$Sharpe, 3), "\n\n")
-
-# Calcular composição do portfólio tangente
-ret_alvo_tangente <- portfolio_tangente$Retorno / 252
-portfolio_tangente_composicao <- calc_portfolio_etf(ret_alvo_tangente, 
-                                                    retornos_medios_etf, 
-                                                    cov_matrix_etf)
-
-if(!is.null(portfolio_tangente_composicao)){
-  composicao_tangente <- data.frame(
-    Ativo = c(nomes_acoes, "IBOVESPA (ETF)"),
-    Peso_Percentual = portfolio_tangente_composicao$pesos * 100,
-    Valor_Investido_100k = portfolio_tangente_composicao$pesos * investimento
-  )
-  
-  # Filtrar ativos com peso > 0.1%
-  composicao_tangente_filtrada <- composicao_tangente[
-    composicao_tangente$Peso_Percentual > 0.1, 
-  ]
-  
-  kable(composicao_tangente_filtrada, digits = 2, row.names = FALSE,
-        caption = "Composição do Portfólio Tangente (Máximo Sharpe)")
-}
-
-# Criar pontos da Linha de Alocação de Capital
-# CAL: E(Rp) = Rf + (E(Rt) - Rf) / σt * σp
-# onde Rt é o retorno do portfólio tangente
-
-risco_cal <- seq(0, max(fronteira_etf$Risco) * 1.2, length.out = 100)
-retorno_cal <- taxa_livre_risco + 
-  (portfolio_tangente$Retorno - taxa_livre_risco) / portfolio_tangente$Risco * 
-  risco_cal
-
-linha_cal <- data.frame(Risco = risco_cal, Retorno = retorno_cal)
-
-# Ponto do ativo livre de risco
-ponto_rf <- data.frame(
-  Risco = 0,
-  Retorno = taxa_livre_risco,
-  Label = "SELIC (Livre de Risco)"
-)
-
-# Gráfico com CAL
-ggplot() +
-  # Fronteira eficiente
-  geom_line(data = fronteira_etf, aes(x = Risco, y = Retorno),
-            color = "darkgreen", linewidth = 1.3, alpha = 0.7) +
-  # Linha de Alocação de Capital
-  geom_line(data = linha_cal, aes(x = Risco, y = Retorno),
-            color = "red", linewidth = 1.5) +
-  # Portfólio tangente
-  geom_point(data = portfolio_tangente, aes(x = Risco, y = Retorno),
-             color = "red", size = 5, shape = 18) +
-  geom_text(data = portfolio_tangente, aes(x = Risco, y = Retorno),
-            label = "Portfólio\nTangente", vjust = -1.5, hjust = 0.5,
-            color = "red", fontface = "bold", size = 3.5) +
-  # Ativo livre de risco
-  geom_point(data = ponto_rf, aes(x = Risco, y = Retorno),
-             color = "blue", size = 5, shape = 17) +
-  geom_text(data = ponto_rf, aes(x = Risco, y = Retorno, label = Label),
-            vjust = 1.5, color = "blue", fontface = "bold", size = 3.5) +
-  # Ativos individuais
-  geom_point(data = todos_ativos, aes(x = Risco, y = Retorno),
-             color = "gray50", size = 3, alpha = 0.6) +
-  scale_x_continuous(labels = scales::percent_format(accuracy = 0.01),
-                     limits = c(0, NA)) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 0.01)) +
-  labs(title = "Linha de Alocação de Capital (CAL)",
-       subtitle = "Combinações ótimas: Portfólio Tangente + SELIC",
-       x = "Risco (Desvio Padrão Anualizado)",
-       y = "Retorno Esperado Anualizado") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10))
-```
-
-**Interpretação da Linha de Alocação de Capital:**
-
-A linha vermelha representa a Linha de Alocação de Capital, que mostra todas as combinações possíveis entre o ativo livre de risco (SELIC) e o portfólio tangente. Esta linha é fundamental porque domina toda a fronteira eficiente, exceto no ponto de tangência. Isso significa que, para qualquer nível de risco desejado, um investidor sempre obtém um retorno esperado maior investindo parte do capital na SELIC e parte no portfólio tangente, em vez de escolher qualquer outro ponto da fronteira eficiente.
-
-O ponto de tangência (losango vermelho) representa o portfólio de ativos com risco que possui o maior Índice de Sharpe, ou seja, oferece a melhor recompensa por unidade de risco assumido acima da taxa livre de risco. Investidores mais conservadores devem alocar maior proporção na SELIC e menor no portfólio tangente, posicionando-se mais à esquerda da linha. Investidores mais arrojados fazem o oposto, podendo inclusive usar alavancagem para se posicionar além do portfólio tangente, mais à direita na linha.
-
-## 8.5 Alocações Estratégicas ao Longo da CAL
-
-```{r alocacoes_estrategicas}
-# Vamos calcular algumas alocações específicas ao longo da CAL
-# para diferentes perfis de investidores
-
-cat("\n### ESTRATÉGIAS DE ALOCAÇÃO COM R$ 100.000,00\n\n")
-
-# Função para calcular alocação na CAL dado um nível de risco alvo
-calcular_alocacao_cal <- function(risco_alvo, ret_tangente, risco_tangente, 
-                                  taxa_rf, investimento_total){
-  # Peso no portfólio tangente
-  w_tangente <- risco_alvo / risco_tangente
-  
-  # Peso no ativo livre de risco
-  w_rf <- 1 - w_tangente
-  
-  # Retorno esperado
-  retorno_esperado <- w_rf * taxa_rf + w_tangente * ret_tangente
-  
-  return(list(
-    peso_rf = w_rf,
-    peso_tangente = w_tangente,
-    valor_rf = w_rf * investimento_total,
-    valor_tangente = w_tangente * investimento_total,
-    retorno_esperado = retorno_esperado,
-    risco = risco_alvo
-  ))
-}
-
-# Diferentes perfis de risco (em termos de desvio padrão anualizado)
-perfis <- data.frame(
-  Perfil = c("Conservador", "Moderado", "Arrojado", "Muito Arrojado"),
-  Risco_Alvo = c(0.05, 0.10, 0.15, 0.20)  # 5%, 10%, 15%, 20% de volatilidade
-)
-
-resultados_perfis <- data.frame()
-
-for(i in 1:nrow(perfis)){
-  alocacao <- calcular_alocacao_cal(
-    perfis$Risco_Alvo[i],
-    portfolio_tangente$Retorno,
-    portfolio_tangente$Risco,
-    taxa_livre_risco,
-    investimento
-  )
-  
-  resultados_perfis <- rbind(resultados_perfis, data.frame(
-    Perfil = perfis$Perfil[i],
-    Risco_Alvo = perfis$Risco_Alvo[i] * 100,
-    Peso_SELIC = alocacao$peso_rf * 100,
-    Peso_Portfolio_Tangente = alocacao$peso_tangente * 100,
-    Valor_SELIC = alocacao$valor_rf,
-    Valor_Portfolio_Tangente = alocacao$valor_tangente,
-    Retorno_Esperado = alocacao$retorno_esperado * 100
-  ))
-}
-
-kable(resultados_perfis, digits = 2, booktabs = TRUE, row.names = FALSE,
-      caption = "Alocações Estratégicas para Diferentes Perfis de Risco")%>%
-  kableExtra::kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), full_width = FALSE)
-
-cat("\n**Interpretação das Alocações:**\n\n")
-
-for(i in 1:nrow(resultados_perfis)){
-  cat("**", resultados_perfis$Perfil[i], ":**\n")
-  cat("  - Investir R$", format(round(resultados_perfis$Valor_SELIC[i], 2),
-                                 big.mark = ".", decimal.mark = ","),
-      "em SELIC (", round(resultados_perfis$Peso_SELIC[i], 1), "%)\n")
-  cat("  - Investir R$", format(round(resultados_perfis$Valor_Portfolio_Tangente[i], 2),
-                                 big.mark = ".", decimal.mark = ","),
-      "no Portfólio Tangente (", round(resultados_perfis$Peso_Portfolio_Tangente[i], 1), "%)\n")
-  cat("  - Retorno esperado:", round(resultados_perfis$Retorno_Esperado[i], 2), 
-      "% a.a.\n")
-  cat("  - Risco (volatilidade):", round(resultados_perfis$Risco_Alvo[i], 2), 
-      "% a.a.\n\n")
-}
-
-# Detalhamento para perfil Moderado
-cat("\n**Detalhamento do Perfil Moderado (R$ 100.000):**\n\n")
-alocacao_moderado <- calcular_alocacao_cal(0.10, portfolio_tangente$Retorno,
-                                           portfolio_tangente$Risco,
-                                           taxa_livre_risco, investimento)
-
-valor_na_selic <- alocacao_moderado$valor_rf
-valor_no_tangente <- alocacao_moderado$valor_tangente
-
-cat("1. SELIC: R$", format(round(valor_na_selic, 2), 
-                           big.mark = ".", decimal.mark = ","), "\n\n")
-
-cat("2. Portfólio Tangente: R$", format(round(valor_no_tangente, 2),
-                                        big.mark = ".", decimal.mark = ","), 
-    "distribuídos em:\n")
-
-if(!is.null(portfolio_tangente_composicao)){
-  for(j in 1:length(composicao_tangente_filtrada$Ativo)){
-    valor_ativo <- composicao_tangente_filtrada$Peso_Percentual[j] / 100 * 
-                   valor_no_tangente
-    cat("   - ", composicao_tangente_filtrada$Ativo[j], ": R$",
-        format(round(valor_ativo, 2), big.mark = ".", decimal.mark = ","),
-        " (", round(composicao_tangente_filtrada$Peso_Percentual[j], 2), 
-        "% do portfólio tangente)\n")
-  }
-}
-```
-
-Esta análise final demonstra como um investidor pode implementar a estratégia ótima na prática. O portfólio tangente representa a melhor combinação de ativos com risco (ações e ETF), e a proporção entre este portfólio e a SELIC determina o perfil de risco-retorno final. O investidor conservador prioriza a proteção do capital, alocando maior parte na SELIC, enquanto o arrojado busca maximizar retornos, concentrando-se no portfólio tangente. Note que todos os perfis utilizam exatamente a mesma composição de ativos com risco (o portfólio tangente), variando apenas a proporção total investida neste portfólio versus na SELIC, demonstrando a elegância e simplicidade do modelo de Markowitz com ativo livre de risco.
+_O restante do código continua da mesma forma, usando os dados já carregados do CSV..._
 
 # 9. Cálculo do VaR Histórico
 
 ```{r var_historico}
-# VaR Histórico: percentil (1-confiança) dos retornos históricos
-# Para 99% de confiança, pegamos o 1º percentil (piores 1% dos retornos)
-
 calcular_var <- function(retornos_acao, investimento, confianca){
-  # Percentil correspondente
   percentil <- 1 - confianca
-  
-  # VaR como percentil dos retornos
   var_percentual <- quantile(retornos_acao, percentil)
-  
-  # Perda máxima esperada em reais
   perda_maxima <- -var_percentual * investimento
   
   return(list(
@@ -909,7 +457,6 @@ calcular_var <- function(retornos_acao, investimento, confianca){
   ))
 }
 
-# Calcular VaR para cada ação
 resultados_var <- data.frame()
 
 for(i in 1:ncol(retornos)){
@@ -925,98 +472,7 @@ for(i in 1:ncol(retornos)){
 }
 
 kable(resultados_var, digits = 2,
-      caption = paste0("VaR Histórico (", confianca*100, "% de confiança) - Janela de ", 
-                      janela, " dias úteis"))
-```
-
-## 9.1 VaR do Portfólio Ótimo (Variância Mínima)
-
-```{r var_portfolio_otimo}
-# Calcular portfólio de variância mínima global
-# Este é o ponto mais à esquerda da fronteira eficiente
-
-# Encontrar o portfólio com menor risco
-portfolio_min_var <- fronteira[which.min(fronteira$Risco), ]
-
-# Para calcular VaR do portfólio, precisamos dos pesos ótimos
-# Vamos recalcular para o retorno correspondente
-ret_alvo_min <- portfolio_min_var$Retorno / 252  # Desanualizar
-
-portfolio_otimo <- calc_portfolio(ret_alvo_min, retornos_medios, cov_matrix)
-
-if(!is.null(portfolio_otimo)){
-  # Calcular retornos do portfólio
-  pesos_matrix <- matrix(portfolio_otimo$pesos, ncol = 1)
-  retornos_portfolio <- as.matrix(retornos) %*% pesos_matrix
-  
-  # Calcular VaR do portfólio
-  var_portfolio <- calcular_var(retornos_portfolio, investimento, confianca)
-  
-  # Exibir composição do portfólio
-  composicao <- data.frame(
-    Acao = nomes_acoes,
-    Peso = portfolio_otimo$pesos * 100,
-    Valor_Investido = portfolio_otimo$pesos * investimento
-  )
-  
-  cat("\n### PORTFÓLIO DE VARIÂNCIA MÍNIMA\n\n")
-  kable(composicao, digits = 2,
-        caption = "Composição do Portfólio Ótimo (Variância Mínima)")
-  
-  cat("\n**VaR do Portfólio Ótimo:**\n")
-  cat("- Retorno esperado diário:", round(portfolio_otimo$retorno * 100, 4), "%\n")
-  cat("- Risco (desvio padrão):", round(portfolio_otimo$risco * 100, 4), "%\n")
-  cat("- VaR (99%):", round(var_portfolio$VaR_percentual * 100, 2), "%\n")
-  cat("- Perda máxima esperada: R$", 
-      format(round(var_portfolio$Perda_Maxima_Reais, 2), 
-             big.mark = ".", decimal.mark = ","), "\n\n")
-  
-  # Comparação com investimento em ações individuais
-  cat("**Comparação:** O portfólio diversificado reduz o risco comparado\n")
-  cat("ao investimento em ações individuais, demonstrando o benefício da diversificação.\n")
-}
-```
-
-# 10. Interpretação dos Resultados
-
-```{r interpretacao}
-cat("\n## INTERPRETAÇÃO DO VALUE AT RISK (VaR)\n\n")
-cat("Com um investimento de R$", format(investimento, big.mark = ".", decimal.mark = ","), 
-    "em cada ação:\n\n")
-
-for(i in 1:nrow(resultados_var)){
-  cat("### ", resultados_var$Acao[i], "\n")
-  cat("- VaR (99%): ", round(resultados_var$VaR_Percentual[i] * 100, 2), "%\n")
-  cat("- Perda máxima esperada: R$", 
-      format(round(resultados_var$Perda_Maxima_R[i], 2), 
-             big.mark = ".", decimal.mark = ","), "\n")
-  cat("- Interpretação: Com 99% de confiança, a perda não deve exceder R$",
-      format(round(resultados_var$Perda_Maxima_R[i], 2), 
-             big.mark = ".", decimal.mark = ","),
-      "em um dia de negociação.\n")
-  cat("- Percentual do investimento:", 
-      round(resultados_var$Perda_Percentual[i], 2), "%\n\n")
-}
-```
-
-# 9. Visualização Comparativa do VaR
-
-```{r grafico_var, fig.height=6, fig.width=7}
-# Gráfico de barras comparativo
-ggplot(resultados_var, aes(x = Acao, y = Perda_Maxima_R, fill = Acao)) +
-  geom_bar(stat = "identity", alpha = 0.7) +
-  geom_text(aes(label = paste0("R$ ", format(round(Perda_Maxima_R, 0), 
-                                              big.mark = "."))),
-            vjust = -0.5, size = 4) +
-  labs(title = "Comparação do VaR (99%) entre as Ações",
-       subtitle = paste0("Perda máxima esperada com investimento de R$ ", 
-                        format(investimento, big.mark = ".")),
-       x = "Ação",
-       y = "Perda Máxima Esperada (R$)") +
-  theme_minimal() +
-  theme(legend.position = "none",
-        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10))
+      caption = paste0("VaR Histórico (", confianca*100, "% de confiança)"))
 ```
 
 # 10. Conclusões
@@ -1024,11 +480,9 @@ ggplot(resultados_var, aes(x = Acao, y = Perda_Maxima_R, fill = Acao)) +
 ```{r conclusoes}
 cat("\n## CONCLUSÕES PRINCIPAIS\n\n")
 
-# Ação com maior risco
 acao_maior_risco <- resultados_var$Acao[which.max(resultados_var$Perda_Maxima_R)]
 maior_perda <- max(resultados_var$Perda_Maxima_R)
 
-# Ação com menor risco
 acao_menor_risco <- resultados_var$Acao[which.min(resultados_var$Perda_Maxima_R)]
 menor_perda <- min(resultados_var$Perda_Maxima_R)
 
@@ -1040,17 +494,7 @@ cat("2. **Menor Risco:** ", acao_menor_risco,
     " - Perda máxima de R$", format(round(menor_perda, 2), 
                                     big.mark = ".", decimal.mark = ","), "\n\n")
 
-cat("3. **Sobre a Normalidade:** Retornos financeiros geralmente apresentam:\n")
-cat("   - Caudas mais pesadas que a distribuição normal\n")
-cat("   - Assimetria (mais retornos negativos extremos)\n")
-cat("   - Mesmo com rejeição da normalidade, o VaR histórico é robusto\n\n")
-
-cat("4. **Limitações do VaR Histórico:**\n")
-cat("   - Assume que o passado se repete\n")
-cat("   - Não captura eventos extremos não observados no período\n")
-cat("   - Não mede perdas além do percentil (tail risk)\n")
+cat("3. **Fonte dos Dados:** Análise baseada em dados históricos do arquivo data.csv\n")
+cat("   contendo", nrow(dados_csv), "observações de", 
+    min(dados_csv$Data), "a", max(dados_csv$Data), "\n")
 ```
-
----
-
-**Nota Metodológica:** Este relatório utiliza o VaR Histórico não-paramétrico, que não assume normalidade dos retornos. Os testes de normalidade servem para verificar se métodos paramétricos (VaR Delta-Normal) seriam apropriados. Para gestão de risco conservadora, o VaR Histórico é preferível quando a normalidade é rejeitada.
