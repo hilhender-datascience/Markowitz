@@ -69,94 +69,89 @@ confianca <- 0.99       # 99% de confiança
 janela <- 252           # 252 dias úteis (1 ano)
 ```
 
-# 3. Coleta de Dados
+# 3. Leitura dos Dados do CSV
 
-## 3.1 Preços de Fechamento das Ações (API B3 via yfR)
+```{r leitura_dados}
+# Ler o arquivo CSV
+# Importante: ajustar o separador conforme o formato do arquivo
+dados_csv <- read.csv("data.csv", 
+                      sep = ";",           # Separador de colunas
+                      dec = ",",           # Separador decimal
+                      stringsAsFactors = FALSE)
 
-```{r coleta_acoes}
-# Coletar dados diretamente da B3 usando yfR
-# yfR é otimizado para ações brasileiras e usa cache local
-cat("Coletando dados da B3...\n")
-
-dados_b3 <- yf_get(
-  tickers = acoes,
-  first_date = data_inicio,
-  last_date = data_fim,
-  freq_data = "daily",
-  thresh_bad_data = 0.75  # Permitir até 25% de dados faltantes
-)
-
-# Verificar se coletou dados
-if(nrow(dados_b3) == 0){
-  stop("Erro: Nenhum dado foi coletado. Verifique os tickers e datas.")
+# Remover a primeira coluna vazia se existir
+if(names(dados_csv)[1] == "" || names(dados_csv)[1] == "X") {
+  dados_csv <- dados_csv[, -1]
 }
 
-cat("\nDados coletados com sucesso!\n")
-cat("Total de observações:", nrow(dados_b3), "\n")
-cat("Período:", min(dados_b3$ref_date), "a", max(dados_b3$ref_date), "\n\n")
+# Converter coluna de Data para formato Date
+dados_csv$Data <- as.Date(dados_csv$Data, format = "%d/%m/%Y")
 
-# Mostrar resumo dos dados coletados por ação
-cat("### Resumo por Ação:\n")
-resumo_coleta <- dados_b3 %>%
-  group_by(ticker) %>%
-  summarise(
-    N_Obs = n(),
-    Primeira_Data = min(ref_date),
-    Ultima_Data = max(ref_date),
-    Preco_Inicial = first(price_close),
-    Preco_Final = last(price_close),
-    Retorno_Periodo = ((last(price_close) / first(price_close)) - 1) * 100
-  )
+# Converter colunas numéricas (remover vírgulas e converter para numeric)
+colunas_numericas <- c("POMO3", "AURE3", "BBAS3", "ITUB3", "IBOV", "SELIC")
 
-kable(resumo_coleta, digits = 2,
-      caption = "Resumo da Coleta de Dados (B3)")
+for(col in colunas_numericas) {
+  if(col %in% names(dados_csv)) {
+    # Substituir vírgula por ponto e converter para numérico
+    dados_csv[[col]] <- as.numeric(gsub(",", ".", dados_csv[[col]]))
+  }
+}
 
-# Transformar para formato wide (colunas = ações)
-precos_wide <- dados_b3 %>%
-  select(ref_date, ticker, price_close) %>%
-  pivot_wider(names_from = ticker, values_from = price_close)
+# Ordenar por data
+dados_csv <- dados_csv[order(dados_csv$Data), ]
 
-# Converter para xts (formato de séries temporais)
-library(xts)
-precos <- xts(precos_wide[, -1], order.by = precos_wide$ref_date)
+# Exibir informações sobre os dados carregados
+cat("### Dados Carregados do CSV:\n\n")
+cat("Total de observações:", nrow(dados_csv), "\n")
+cat("Período:", min(dados_csv$Data), "a", max(dados_csv$Data), "\n")
+cat("Variáveis:", paste(names(dados_csv), collapse = ", "), "\n\n")
+
+# Exibir primeiras linhas
+kable(head(dados_csv, 10), digits = 4,
+      caption = "Primeiras 10 linhas dos dados")
+```
+
+# 4. Preparação dos Dados para Análise
+
+```{r preparacao_dados}
+# Criar objetos xts para as séries temporais
+# Preços das ações
+precos <- xts(dados_csv[, nomes_acoes], order.by = dados_csv$Data)
 colnames(precos) <- nomes_acoes
 
-# Exibir primeiras linhas dos preços
-cat("\n### Primeiros Preços Coletados:\n")
-kable(head(data.frame(Data = index(precos), coredata(precos)), 5), 
-      digits = 4,booktabs = TRUE,
-      caption = "Primeiras 5 observações de Preços de Fechamento")%>%
-  kableExtra::kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), full_width = FALSE)
-```
-
-## 3.2 Dados do IBOVESPA
-
-```{r coleta_ibovespa}
-# Coleta do Índice Bovespa
-getSymbols("^BVSP", src = "yahoo", from = data_inicio, to = data_fim)
-ibovespa <- Cl(BVSP)
+# IBOVESPA
+ibovespa <- xts(dados_csv$IBOV, order.by = dados_csv$Data)
 colnames(ibovespa) <- "IBOVESPA"
-```
 
-## 3.4 Dados da SELIC
-
-```{r coleta_selic}
-# Código da SELIC no SGS do BCB: 11 (Taxa SELIC - % a.a.)
-cat("Coletando dados da SELIC do Banco Central...\n")
-
-selic_data <- gbcbd_get_series(id = 11, 
-                               first.date = data_inicio, 
-                               last.date = data_fim,
-                               use.memoise = FALSE)
-
+# SELIC (já em % a.a. no CSV)
 # Converter para taxa diária equivalente
-# Fórmula: (1 + taxa_anual)^(1/252) - 1
-selic_data$taxa_diaria <- (1 + selic_data$value/100)^(1/252) - 1
+selic_anual <- dados_csv$SELIC
+selic_diaria <- (1 + selic_anual/100)^(1/252) - 1
 
-cat("SELIC coletada com sucesso!\n")
-cat("Taxa SELIC atual (% a.a.):", tail(selic_data$value, 1), "\n")
+# Criar dataframe com informações da SELIC
+selic_data <- data.frame(
+  ref.date = dados_csv$Data,
+  value = selic_anual,
+  taxa_diaria = selic_diaria
+)
+
+cat("\n### Resumo dos Dados Preparados:\n\n")
+cat("Taxa SELIC média (% a.a.):", round(mean(selic_anual, na.rm = TRUE), 2), "\n")
+cat("Taxa SELIC atual (% a.a.):", tail(selic_anual, 1), "\n")
 cat("Taxa diária equivalente:", 
-    round(tail(selic_data$taxa_diaria, 1) * 100, 4), "%\n")
+    round(tail(selic_diaria, 1) * 100, 4), "%\n\n")
+
+# Resumo dos preços
+resumo_precos <- data.frame(
+  Acao = nomes_acoes,
+  Preco_Inicial = as.numeric(precos[1, ]),
+  Preco_Final = as.numeric(precos[nrow(precos), ]),
+  Retorno_Periodo = ((as.numeric(precos[nrow(precos), ]) / 
+                       as.numeric(precos[1, ])) - 1) * 100
+)
+
+kable(resumo_precos, digits = 2,
+      caption = "Resumo dos Preços das Ações")
 ```
 
 # 4. Visualização dos Dados Coletados
