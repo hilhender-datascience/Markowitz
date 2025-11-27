@@ -1,10 +1,18 @@
 ---
-title: "P4: Teoria Moderna de Portifolio de Markowitz e VaR"
+title: "P4: Teoria Moderna de Portfólio de Markowitz e VaR"
 author: "Raphael Marques Franco"
 date: "`r Sys.Date()`"
 output: 
-  pdf_document:
-    latex_engine: xelatex
+ html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+    fig_caption: true
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
